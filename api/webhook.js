@@ -8,7 +8,10 @@ const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
 
 // Números assinantes autorizados (substitua pelo seu sistema de pagamento)
 const ASSINANTES = new Set([
- "5516982617105",
+  "5516982617105",
+  "551698261710",
+  "16982617105",
+  "5516982617105@s.whatsapp.net",
 ]);
 
 const PROMPT_DOUTORZINHO = `Você é o Doutorzinho, um assistente simpático, acolhedor e inteligente que explica resultados de exames médicos para brasileiros comuns.
