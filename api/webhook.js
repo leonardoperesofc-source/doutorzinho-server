@@ -9,9 +9,6 @@ const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
 // Números assinantes autorizados (substitua pelo seu sistema de pagamento)
 const ASSINANTES = new Set([
   "5516982617105",
-  "551698261710",
-  "16982617105",
-  "5516982617105@s.whatsapp.net",
 ]);
 
 const PROMPT_DOUTORZINHO = `Você é o Doutorzinho, um assistente simpático, acolhedor e inteligente que explica resultados de exames médicos para brasileiros comuns.
@@ -99,8 +96,6 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
     const telefone = body?.phone?.replace(/\D/g, "");
-    console.log("TELEFONE RECEBIDO:", telefone);
-console.log("BODY COMPLETO:", JSON.stringify(body));
     const tipo = body?.type;
 
     if (!telefone) return res.status(200).json({ ok: true });
@@ -119,28 +114,36 @@ console.log("BODY COMPLETO:", JSON.stringify(body));
 
     let resposta = "";
 
+    // Extrai texto — Z-API envia em body.text.message
+    const textoRecebido = body?.text?.message || body?.message || "";
+
+    // Extrai imagem
+    const imagemBase64 = body?.image?.imageMessage?.base64 || body?.image?.base64 || null;
+    const imagemMime = body?.image?.imageMessage?.mimetype || body?.image?.mimetype || "image/jpeg";
+
+    // Verifica se é documento/PDF
+    const isDocumento = tipo === "document" || body?.document;
+
+    console.log("TIPO:", tipo, "TEXTO:", textoRecebido, "TEM IMAGEM:", !!imagemBase64);
+
     // Mensagem com imagem (foto do exame)
-    if (tipo === "image" && body?.image?.imageMessage?.base64) {
-      const base64 = body.image.imageMessage.base64;
-      const mimetype = body.image.imageMessage.mimetype || "image/jpeg";
-      resposta = await analisarComImagem(base64, mimetype, telefone);
-    }
-
-    // Mensagem de texto (pergunta sobre exame)
-    else if (tipo === "text" && body?.text?.message) {
-      const texto = body.text.message;
-
-      // Comandos especiais
-      if (texto.toLowerCase().includes("oi") || texto.toLowerCase().includes("olá")) {
-        resposta = `Olá! 👋 Sou o *Doutorzinho*, seu assistente de saúde do SeuExamify!\n\nPosso te ajudar de duas formas:\n\n📸 *Envie uma foto* do seu exame e eu analiso na hora\n❓ *Digite sua dúvida* sobre algum valor específico\n\nComo posso te ajudar hoje? 😊`;
-      } else {
-        resposta = await analisarComTexto(texto);
-      }
+    if (imagemBase64) {
+      resposta = await analisarComImagem(imagemBase64, imagemMime, telefone);
     }
 
     // PDF (documento)
-    else if (tipo === "document") {
+    else if (isDocumento) {
       resposta = `📄 Recebi seu PDF!\n\nPor enquanto analiso melhor por *foto do exame*. Tira uma foto nítida do resultado e manda aqui que eu analiso na hora! 📸`;
+    }
+
+    // Mensagem de texto
+    else if (textoRecebido) {
+      const txt = textoRecebido.toLowerCase();
+      if (txt.includes("oi") || txt.includes("olá") || txt.includes("ola") || txt.includes("hello") || txt.length <= 3) {
+        resposta = `Olá! 👋 Sou o *Doutorzinho*, seu assistente de saúde do SeuExamify!\n\nPosso te ajudar de duas formas:\n\n📸 *Envie uma foto* do seu exame e eu analiso na hora\n❓ *Digite sua dúvida* sobre algum valor específico\n\nComo posso te ajudar hoje? 😊`;
+      } else {
+        resposta = await analisarComTexto(textoRecebido);
+      }
     }
 
     if (resposta) {
