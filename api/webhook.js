@@ -8,7 +8,7 @@ const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
 
 // Números assinantes autorizados (substitua pelo seu sistema de pagamento)
 const ASSINANTES = new Set([
-  // ex: "5511999999999"
+  // ex: "5516982617105"
   // você vai adicionar aqui após cada pagamento confirmado
 ]);
 
