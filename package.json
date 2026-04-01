@@ -1,0 +1,9 @@
+{
+  "name": "doutorzinho-server",
+  "version": "1.0.0",
+  "description": "Servidor do Doutorzinho — WhatsApp + Claude API",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0"
+  }
+}
