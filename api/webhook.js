@@ -99,6 +99,8 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
     const telefone = body?.phone?.replace(/\D/g, "");
+    console.log("TELEFONE RECEBIDO:", telefone);
+console.log("BODY COMPLETO:", JSON.stringify(body));
     const tipo = body?.type;
 
     if (!telefone) return res.status(200).json({ ok: true });
