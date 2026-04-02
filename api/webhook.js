@@ -6,10 +6,9 @@ const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE_ID;
 const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
 
-// Números assinantes autorizados (substitua pelo seu sistema de pagamento)
+// Números assinantes autorizados
 const ASSINANTES = new Set([
-  "5516982617105",
-  "5516997793447",
+  // ex: "5511999999999"
 ]);
 
 const PROMPT_DOUTORZINHO = `Você é o Doutorzinho, um assistente simpático, acolhedor e inteligente que explica resultados de exames médicos para brasileiros comuns.
@@ -47,11 +46,27 @@ async function enviarMensagem(telefone, mensagem) {
   });
 }
 
+// Baixa imagem de uma URL e converte para base64
+async function urlParaBase64(imageUrl) {
+  const response = await fetch(imageUrl);
+  if (!response.ok) throw new Error(`Falha ao baixar imagem: ${response.status}`);
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const base64 = buffer.toString("base64");
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  const mimetype = contentType.split(";")[0].trim();
+  return { base64, mimetype };
+}
+
 async function analisarComImagem(base64, mimetype, telefone) {
   await enviarMensagem(
     telefone,
     "⏳ Recebi seu exame! O Doutorzinho está analisando... aguarda uns 30 segundos 🩺"
   );
+
+  const mimetypeValido = ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mimetype)
+    ? mimetype
+    : "image/jpeg";
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -62,7 +77,7 @@ async function analisarComImagem(base64, mimetype, telefone) {
         content: [
           {
             type: "image",
-            source: { type: "base64", media_type: mimetype, data: base64 },
+            source: { type: "base64", media_type: mimetypeValido, data: base64 },
           },
           {
             type: "text",
@@ -115,31 +130,43 @@ export default async function handler(req, res) {
 
     let resposta = "";
 
-    // Extrai texto — Z-API envia em body.text.message
+    // Extrai texto
     const textoRecebido = body?.text?.message || body?.message || "";
 
-    // Extrai imagem
-    const imagemBase64 = body?.image?.imageMessage?.base64 || body?.image?.base64 || null;
-    const imagemMime = body?.image?.imageMessage?.mimetype || body?.image?.mimetype || "image/jpeg";
+    // Extrai URL da imagem — Z-API envia como imageUrl
+    const imagemUrl = body?.image?.imageUrl || body?.image?.imageMessage?.url || null;
+
+    // Fallback base64 direto
+    const imagemBase64Direto = body?.image?.imageMessage?.base64 || body?.image?.base64 || null;
+    const imagemMimeDireto = body?.image?.imageMessage?.mimetype || body?.image?.mimetype || "image/jpeg";
 
     // Verifica se é documento/PDF
     const isDocumento = tipo === "document" || body?.document;
 
-    console.log("BODY COMPLETO:", JSON.stringify(body, null, 2));
-console.log("TIPO:", tipo, "TEXTO:", textoRecebido, "TEM IMAGEM:", !!imagemBase64);
-console.log("IMAGE FIELD:", JSON.stringify(body?.image, null, 2));
+    console.log("TIPO:", tipo, "TEM URL:", !!imagemUrl, "TEM BASE64:", !!imagemBase64Direto);
 
-    // Mensagem com imagem (foto do exame)
-    if (imagemBase64) {
-      resposta = await analisarComImagem(imagemBase64, imagemMime, telefone);
+    // Imagem via URL (Z-API)
+    if (imagemUrl) {
+      try {
+        const { base64, mimetype } = await urlParaBase64(imagemUrl);
+        resposta = await analisarComImagem(base64, mimetype, telefone);
+      } catch (err) {
+        console.error("Erro ao baixar imagem:", err);
+        resposta = "😕 Tive um problema ao acessar sua imagem. Tenta mandar a foto novamente!";
+      }
     }
 
-    // PDF (documento)
+    // Imagem em base64 direto (fallback)
+    else if (imagemBase64Direto) {
+      resposta = await analisarComImagem(imagemBase64Direto, imagemMimeDireto, telefone);
+    }
+
+    // PDF
     else if (isDocumento) {
       resposta = `📄 Recebi seu PDF!\n\nPor enquanto analiso melhor por *foto do exame*. Tira uma foto nítida do resultado e manda aqui que eu analiso na hora! 📸`;
     }
 
-    // Mensagem de texto
+    // Texto
     else if (textoRecebido) {
       const txt = textoRecebido.toLowerCase();
       if (txt.includes("oi") || txt.includes("olá") || txt.includes("ola") || txt.includes("hello") || txt.length <= 3) {
@@ -156,6 +183,6 @@ console.log("IMAGE FIELD:", JSON.stringify(body?.image, null, 2));
     return res.status(200).json({ ok: true });
   } catch (error) {
     console.error("Erro no webhook:", error);
-    return res.status(200).json({ ok: true }); // Sempre retorna 200 para o Z-API
+    return res.status(200).json({ ok: true });
   }
 }
