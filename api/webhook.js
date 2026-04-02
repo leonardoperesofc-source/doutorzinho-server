@@ -64,7 +64,7 @@ async function enviarMensagem(telefone, mensagem) {
       "Content-Type": "application/json",
       "Client-Token": ZAPI_SECURITY,
     },
-    body: JSON.stringify({ phone: telefone, message: mensagem }),
+    body: JSON.stringify({ phone: telefone, message: mensagem, delayMessage: 3 }),
   });
 }
 
