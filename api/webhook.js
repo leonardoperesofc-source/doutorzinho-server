@@ -1,17 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { Redis } from "@upstash/redis";
 
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
+const redis = Redis.fromEnv();
 
 const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE_ID;
 const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
-// Controle anti-duplicata — armazena IDs de mensagens já processadas
-const mensagensProcessadas = new Set();
 
-// Números assinantes autorizados
-const ASSINANTES = new Set([
- "5516982617105"
-]);
+// Anti-duplicata em memória
+const mensagensProcessadas = new Set();
 
 const PROMPT_DOUTORZINHO = `Você é o Doutorzinho, um assistente simpático, acolhedor e inteligente que explica resultados de exames médicos para brasileiros comuns.
 
@@ -48,7 +46,6 @@ async function enviarMensagem(telefone, mensagem) {
   });
 }
 
-// Baixa imagem de uma URL e converte para base64
 async function urlParaBase64(imageUrl) {
   const response = await fetch(imageUrl);
   if (!response.ok) throw new Error(`Falha ao baixar imagem: ${response.status}`);
@@ -120,19 +117,20 @@ export default async function handler(req, res) {
 
     // Ignora mensagens enviadas pelo próprio bot
     if (body?.fromMe) return res.status(200).json({ ok: true });
-   
-  // Ignora mensagem já processada (evita duplicata)
-const messageId = body?.messageId || body?.id || null;
-if (messageId) {
-  if (mensagensProcessadas.has(messageId)) {
-    return res.status(200).json({ ok: true });
-  }
-  mensagensProcessadas.add(messageId);
-  setTimeout(() => mensagensProcessadas.delete(messageId), 5 * 60 * 1000);
-}
-   
-    // Verifica se é assinante
-    if (!ASSINANTES.has(telefone)) {
+
+    // Anti-duplicata
+    const messageId = body?.messageId || body?.id || null;
+    if (messageId) {
+      if (mensagensProcessadas.has(messageId)) {
+        return res.status(200).json({ ok: true });
+      }
+      mensagensProcessadas.add(messageId);
+      setTimeout(() => mensagensProcessadas.delete(messageId), 5 * 60 * 1000);
+    }
+
+    // Verifica se é assinante no Redis
+    const isAssinante = await redis.get(`assinante:${telefone}`);
+    if (!isAssinante) {
       await enviarMensagem(
         telefone,
         `Olá! 👋 Sou o *Doutorzinho*, seu assistente de saúde.\n\nPara receber análises dos seus exames, você precisa ser assinante do *SeuExamify*.\n\n👉 Acesse: https://seuexamify.com.br e escolha seu plano.\n\nQualquer dúvida, estamos aqui! 😊`
@@ -142,22 +140,14 @@ if (messageId) {
 
     let resposta = "";
 
-    // Extrai texto
     const textoRecebido = body?.text?.message || body?.message || "";
-
-    // Extrai URL da imagem — Z-API envia como imageUrl
     const imagemUrl = body?.image?.imageUrl || body?.image?.imageMessage?.url || null;
-
-    // Fallback base64 direto
     const imagemBase64Direto = body?.image?.imageMessage?.base64 || body?.image?.base64 || null;
     const imagemMimeDireto = body?.image?.imageMessage?.mimetype || body?.image?.mimetype || "image/jpeg";
-
-    // Verifica se é documento/PDF
     const isDocumento = tipo === "document" || body?.document;
 
     console.log("TIPO:", tipo, "TEM URL:", !!imagemUrl, "TEM BASE64:", !!imagemBase64Direto);
 
-    // Imagem via URL (Z-API)
     if (imagemUrl) {
       try {
         const { base64, mimetype } = await urlParaBase64(imagemUrl);
@@ -166,20 +156,11 @@ if (messageId) {
         console.error("Erro ao baixar imagem:", err);
         resposta = "😕 Tive um problema ao acessar sua imagem. Tenta mandar a foto novamente!";
       }
-    }
-
-    // Imagem em base64 direto (fallback)
-    else if (imagemBase64Direto) {
+    } else if (imagemBase64Direto) {
       resposta = await analisarComImagem(imagemBase64Direto, imagemMimeDireto, telefone);
-    }
-
-    // PDF
-    else if (isDocumento) {
+    } else if (isDocumento) {
       resposta = `📄 Recebi seu PDF!\n\nPor enquanto analiso melhor por *foto do exame*. Tira uma foto nítida do resultado e manda aqui que eu analiso na hora! 📸`;
-    }
-
-    // Texto
-    else if (textoRecebido) {
+    } else if (textoRecebido) {
       const txt = textoRecebido.toLowerCase();
       if (txt.includes("oi") || txt.includes("olá") || txt.includes("ola") || txt.includes("hello") || txt.length <= 3) {
         resposta = `Olá! 👋 Sou o *Doutorzinho*, seu assistente de saúde do SeuExamify!\n\nPosso te ajudar de duas formas:\n\n📸 *Envie uma foto* do seu exame e eu analiso na hora\n❓ *Digite sua dúvida* sobre algum valor específico\n\nComo posso te ajudar hoje? 😊`;
