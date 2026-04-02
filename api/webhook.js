@@ -80,7 +80,6 @@ async function urlParaBase64(imageUrl) {
 }
 
 async function analisarComImagem(base64, mimetype, telefone) {
-  await simularDigitando(telefone, 2);
   await enviarMensagem(
     telefone,
     "⏳ Recebi seu exame! O Doutorzinho está analisando... aguarda uns 30 segundos 🩺"
@@ -196,7 +195,6 @@ if (messageId) {
     }
 
     if (resposta) {
-      await simularDigitando(telefone, 2);
       await enviarMensagem(telefone, resposta);
     }
 
