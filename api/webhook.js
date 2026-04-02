@@ -125,7 +125,9 @@ export default async function handler(req, res) {
     // Verifica se é documento/PDF
     const isDocumento = tipo === "document" || body?.document;
 
-    console.log("TIPO:", tipo, "TEXTO:", textoRecebido, "TEM IMAGEM:", !!imagemBase64);
+    console.log("BODY COMPLETO:", JSON.stringify(body, null, 2));
+console.log("TIPO:", tipo, "TEXTO:", textoRecebido, "TEM IMAGEM:", !!imagemBase64);
+console.log("IMAGE FIELD:", JSON.stringify(body?.image, null, 2));
 
     // Mensagem com imagem (foto do exame)
     if (imagemBase64) {
