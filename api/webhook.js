@@ -33,6 +33,22 @@ Regras absolutas:
 - Se a imagem não for um exame médico, diga gentilmente que só analisa exames
 - Termine sempre com: "Lembre-se: sou uma IA educacional e não substituo seu médico 🩺"`;
 
+async function simularDigitando(telefone, segundos = 3) {
+  const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-presence`;
+  await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Client-Token": ZAPI_SECURITY,
+    },
+    body: JSON.stringify({ 
+      phone: telefone, 
+      presence: "composing"
+    }),
+  });
+  await new Promise(resolve => setTimeout(resolve, segundos * 1000));
+}
+
 async function enviarMensagem(telefone, mensagem) {
   const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-text`;
   await fetch(url, {
@@ -57,6 +73,7 @@ async function urlParaBase64(imageUrl) {
 }
 
 async function analisarComImagem(base64, mimetype, telefone) {
+  await simularDigitando(telefone, 2);
   await enviarMensagem(
     telefone,
     "⏳ Recebi seu exame! O Doutorzinho está analisando... aguarda uns 30 segundos 🩺"
@@ -172,6 +189,7 @@ if (messageId) {
     }
 
     if (resposta) {
+      await simularDigitando(telefone, 2);
       await enviarMensagem(telefone, resposta);
     }
 
