@@ -5,6 +5,8 @@ const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE_ID;
 const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
+// Controle anti-duplicata — armazena IDs de mensagens já processadas
+const mensagensProcessadas = new Set();
 
 // Números assinantes autorizados
 const ASSINANTES = new Set([
@@ -118,7 +120,17 @@ export default async function handler(req, res) {
 
     // Ignora mensagens enviadas pelo próprio bot
     if (body?.fromMe) return res.status(200).json({ ok: true });
-
+   
+  // Ignora mensagem já processada (evita duplicata)
+const messageId = body?.messageId || body?.id || null;
+if (messageId) {
+  if (mensagensProcessadas.has(messageId)) {
+    return res.status(200).json({ ok: true });
+  }
+  mensagensProcessadas.add(messageId);
+  setTimeout(() => mensagensProcessadas.delete(messageId), 5 * 60 * 1000);
+}
+   
     // Verifica se é assinante
     if (!ASSINANTES.has(telefone)) {
       await enviarMensagem(
