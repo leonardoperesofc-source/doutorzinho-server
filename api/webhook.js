@@ -34,19 +34,26 @@ Regras absolutas:
 - Termine sempre com: "Lembre-se: sou uma IA educacional e não substituo seu médico 🩺"`;
 
 async function simularDigitando(telefone, segundos = 3) {
-  const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-presence`;
-  await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Client-Token": ZAPI_SECURITY,
-    },
-    body: JSON.stringify({ 
-      phone: telefone, 
-      presence: "composing"
-    }),
-  });
-  await new Promise(resolve => setTimeout(resolve, segundos * 1000));
+  try {
+    // Endpoint correto da Z-API para status de digitando
+    const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-chat-state`;
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Client-Token": ZAPI_SECURITY,
+      },
+      body: JSON.stringify({
+        phone: telefone,
+        chatState: "COMPOSING" // COMPOSING = digitando, RECORDING = gravando áudio
+      }),
+    });
+    // Aguarda o tempo definido
+    await new Promise(resolve => setTimeout(resolve, segundos * 1000));
+  } catch (err) {
+    // Silencia erro para não quebrar o fluxo
+    console.log("Erro no simularDigitando:", err);
+  }
 }
 
 async function enviarMensagem(telefone, mensagem) {
