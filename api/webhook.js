@@ -9,7 +9,6 @@ const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
 
 // Anti-duplicata em memória
-const mensagensProcessadas = new Set();
 
 const PROMPT_DOUTORZINHO = `Você é o Doutorzinho, um assistente simpático, acolhedor e inteligente que explica resultados de exames médicos para brasileiros comuns.
 
@@ -118,15 +117,18 @@ export default async function handler(req, res) {
     // Ignora mensagens enviadas pelo próprio bot
     if (body?.fromMe) return res.status(200).json({ ok: true });
 
-    // Anti-duplicata
-    const messageId = body?.messageId || body?.id || null;
-    if (messageId) {
-      if (mensagensProcessadas.has(messageId)) {
-        return res.status(200).json({ ok: true });
-      }
-      mensagensProcessadas.add(messageId);
-      setTimeout(() => mensagensProcessadas.delete(messageId), 5 * 60 * 1000);
-    }
+    // Anti-duplicata via Redis
+const messageId = body?.messageId || body?.id || null;
+if (messageId) {
+  const salvou = await redis.set(`msg:${messageId}`, "1", {
+    nx: true,
+    ex: 300
+  });
+  if (!salvou) {
+    console.log("Mensagem duplicada ignorada:", messageId);
+    return res.status(200).json({ ok: true });
+  }
+}
 
     // Verifica se é assinante no Redis
     const isAssinante = await redis.get(`assinante:${telefone}`);
