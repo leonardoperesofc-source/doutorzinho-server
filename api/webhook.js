@@ -31,7 +31,7 @@ Regras absolutas:
 - NUNCA diga que algo é certamente uma doença
 - SEMPRE sugira consultar o médico para confirmação
 - Se a imagem não for um exame médico, diga gentilmente que só analisa exames
-- Termine sempre com: "Lembre-se: sou uma IA educacional e não substituo seu médico 🩺"`;
+- Termine sempre com: "Lembre-se: não esqueça de consultar seu médico. 🩺"`;
 
 async function simularDigitando(telefone, segundos = 3) {
   try {
