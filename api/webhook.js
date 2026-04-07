@@ -135,9 +135,13 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
     const telefone = body?.phone?.replace(/\D/g, "");
-    const tipo = body?.type;
+const tipo = body?.type;
 
-    if (!telefone) return res.status(200).json({ ok: true });
+console.log("Body recebido phone:", body?.phone);
+console.log("Telefone formatado:", telefone);
+console.log("Chave Redis buscada:", `assinante:${telefone}`);
+
+if (!telefone) return res.status(200).json({ ok: true });
 
     // Ignora mensagens enviadas pelo próprio bot
     if (body?.fromMe) return res.status(200).json({ ok: true });
