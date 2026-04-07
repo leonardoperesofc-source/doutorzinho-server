@@ -134,7 +134,11 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body;
-    const telefone = body?.phone?.replace(/\D/g, "");
+    let telefone = body?.phone?.replace(/\D/g, "");
+// Corrige números BR sem o 9º dígito: 5537XXXXXXXX → 55379XXXXXXXX
+if (telefone && telefone.startsWith("55") && telefone.length === 12) {
+  telefone = telefone.slice(0, 4) + "9" + telefone.slice(4);
+}
 const tipo = body?.type;
 
 console.log("Body recebido phone:", body?.phone);
