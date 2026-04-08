@@ -8,7 +8,10 @@ const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE_ID;
 const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
 
-// Anti-duplicata em memória
+// Máximo de mensagens no histórico por usuário
+const MAX_HISTORICO = 10;
+// Tempo de expiração do histórico: 2 horas de inatividade
+const HISTORICO_TTL = 60 * 60 * 2;
 
 const PROMPT_DOUTORZINHO = `Você é o Doutorzinho, um assistente simpático, acolhedor e inteligente que explica resultados de exames médicos e tira dúvidas gerais SOMENTE sobre saúde para brasileiros comuns.
 
@@ -18,10 +21,11 @@ Seu estilo:
 - Sempre contextualiza: "isso é comum", "não é urgência", "vale checar com seu médico"
 - Usa emojis com moderação para deixar o tom mais leve
 - Máximo 5 parágrafos curtos — vai direto ao ponto
-- Interaja com o usuário, faça perguntas dependendo da circunstância da conversa.
-- Continue conversando com o usuário após a sua resposta. Ele pode perguntar ou responder algo em seguida diante da sua resposta.
+- Seja relacional e continue a conversa naturalmente — lembre do que o usuário disse antes
+- Faça perguntas de acompanhamento quando fizer sentido
+- Se o usuário responder algo sobre sua análise anterior, continue de onde parou
 
-Estrutura da sua resposta:
+Estrutura da sua resposta quando analisar exame:
 1. Resumo rápido do que encontrou (1-2 linhas)
 2. O que está normal ✅
 3. O que merece atenção ⚠️ (se houver)
@@ -33,30 +37,9 @@ Regras absolutas:
 - NUNCA diga que algo é certamente uma doença
 - SEMPRE sugira consultar o médico para confirmação
 - Se a imagem não for um exame médico, diga gentilmente que só analisa exames
-- Termine sempre com: "Lembre-se: não esqueça de consultar seu médico. 🩺"`;
-
-async function simularDigitando(telefone, segundos = 3) {
-  try {
-    // Endpoint correto da Z-API para status de digitando
-    const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-chat-state`;
-    await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Client-Token": ZAPI_SECURITY,
-      },
-      body: JSON.stringify({
-        phone: telefone,
-        chatState: "COMPOSING" // COMPOSING = digitando, RECORDING = gravando áudio
-      }),
-    });
-    // Aguarda o tempo definido
-    await new Promise(resolve => setTimeout(resolve, segundos * 1000));
-  } catch (err) {
-    // Silencia erro para não quebrar o fluxo
-    console.log("Erro no simularDigitando:", err);
-  }
-}
+- Termine sempre com: "Lembre-se: não esqueça de consultar seu médico. 🩺"
+- NUNCA peça para o usuário enviar o exame novamente se ele já enviou antes nessa conversa
+- Se o usuário fizer perguntas de acompanhamento, responda naturalmente sem reiniciar a conversa`;
 
 async function enviarMensagem(telefone, mensagem) {
   const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-text`;
@@ -70,6 +53,23 @@ async function enviarMensagem(telefone, mensagem) {
   });
 }
 
+async function simularDigitando(telefone) {
+  try {
+    const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-chat-state`;
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Client-Token": ZAPI_SECURITY,
+      },
+      body: JSON.stringify({ phone: telefone, chatState: "COMPOSING" }),
+    });
+    await new Promise(resolve => setTimeout(resolve, 3000));
+  } catch (err) {
+    console.log("Erro no simularDigitando:", err);
+  }
+}
+
 async function urlParaBase64(imageUrl) {
   const response = await fetch(imageUrl);
   if (!response.ok) throw new Error(`Falha ao baixar imagem: ${response.status}`);
@@ -81,52 +81,70 @@ async function urlParaBase64(imageUrl) {
   return { base64, mimetype };
 }
 
-async function analisarComImagem(base64, mimetype, telefone) {
-  await enviarMensagem(
-    telefone,
-    "⏳ Recebi seu exame! O Doutorzinho está analisando... aguarda uns 30 segundos 🩺"
-  );
-
-  const mimetypeValido = ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mimetype)
-    ? mimetype
-    : "image/jpeg";
-
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1024,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: { type: "base64", media_type: mimetypeValido, data: base64 },
-          },
-          {
-            type: "text",
-            text: PROMPT_DOUTORZINHO + "\n\nAnalise o exame nesta imagem.",
-          },
-        ],
-      },
-    ],
-  });
-
-  return response.content[0].text;
+// Carrega histórico do Redis
+async function carregarHistorico(telefone) {
+  try {
+    const raw = await redis.get(`historico:${telefone}`);
+    if (!raw) return [];
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    return [];
+  }
 }
 
-async function analisarComTexto(pergunta) {
+// Salva histórico no Redis com TTL
+async function salvarHistorico(telefone, historico) {
+  try {
+    // Mantém só as últimas MAX_HISTORICO mensagens
+    const recente = historico.slice(-MAX_HISTORICO);
+    await redis.set(`historico:${telefone}`, JSON.stringify(recente), { ex: HISTORICO_TTL });
+  } catch (err) {
+    console.log("Erro ao salvar histórico:", err);
+  }
+}
+
+// Resposta com histórico completo
+async function responderComHistorico(telefone, novaMensagem, imagemData = null) {
+  const historico = await carregarHistorico(telefone);
+
+  // Monta a nova mensagem do usuário
+  let novoConteudo;
+  if (imagemData) {
+    const mimetypeValido = ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(imagemData.mimetype)
+      ? imagemData.mimetype
+      : "image/jpeg";
+    novoConteudo = [
+      {
+        type: "image",
+        source: { type: "base64", media_type: mimetypeValido, data: imagemData.base64 },
+      },
+      {
+        type: "text",
+        text: novaMensagem || "Analise este exame.",
+      },
+    ];
+  } else {
+    novoConteudo = novaMensagem;
+  }
+
+  // Adiciona ao histórico
+  historico.push({ role: "user", content: novoConteudo });
+
+  // Chama o Claude com todo o histórico
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,
-    messages: [
-      {
-        role: "user",
-        content: PROMPT_DOUTORZINHO + "\n\nPergunta do paciente: " + pergunta,
-      },
-    ],
+    system: PROMPT_DOUTORZINHO,
+    messages: historico,
   });
 
-  return response.content[0].text;
+  const respostaTexto = response.content[0].text;
+
+  // Salva resposta do assistente no histórico
+  historico.push({ role: "assistant", content: respostaTexto });
+  await salvarHistorico(telefone, historico);
+
+  return respostaTexto;
 }
 
 export default async function handler(req, res) {
@@ -134,36 +152,34 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body;
+
+    // Formata telefone e corrige 9º dígito se necessário
     let telefone = body?.phone?.replace(/\D/g, "");
-// Corrige números BR sem o 9º dígito: 5537XXXXXXXX → 55379XXXXXXXX
-if (telefone && telefone.startsWith("55") && telefone.length === 12) {
-  telefone = telefone.slice(0, 4) + "9" + telefone.slice(4);
-}
-const tipo = body?.type;
+    if (telefone && telefone.startsWith("55") && telefone.length === 12) {
+      telefone = telefone.slice(0, 4) + "9" + telefone.slice(4);
+    }
 
-console.log("Body recebido phone:", body?.phone);
-console.log("Telefone formatado:", telefone);
-console.log("Chave Redis buscada:", `assinante:${telefone}`);
+    const tipo = body?.type;
 
-if (!telefone) return res.status(200).json({ ok: true });
+    console.log("Telefone formatado:", telefone);
+    console.log("Chave Redis buscada:", `assinante:${telefone}`);
+
+    if (!telefone) return res.status(200).json({ ok: true });
 
     // Ignora mensagens enviadas pelo próprio bot
     if (body?.fromMe) return res.status(200).json({ ok: true });
 
     // Anti-duplicata via Redis
-const messageId = body?.messageId || body?.id || null;
-if (messageId) {
-  const salvou = await redis.set(`msg:${messageId}`, "1", {
-    nx: true,
-    ex: 300
-  });
-  if (!salvou) {
-    console.log("Mensagem duplicada ignorada:", messageId);
-    return res.status(200).json({ ok: true });
-  }
-}
+    const messageId = body?.messageId || body?.id || null;
+    if (messageId) {
+      const salvou = await redis.set(`msg:${messageId}`, "1", { nx: true, ex: 300 });
+      if (!salvou) {
+        console.log("Mensagem duplicada ignorada:", messageId);
+        return res.status(200).json({ ok: true });
+      }
+    }
 
-    // Verifica se é assinante no Redis
+    // Verifica se é assinante
     const isAssinante = await redis.get(`assinante:${telefone}`);
     if (!isAssinante) {
       await enviarMensagem(
@@ -173,8 +189,6 @@ if (messageId) {
       return res.status(200).json({ ok: true });
     }
 
-    let resposta = "";
-
     const textoRecebido = body?.text?.message || body?.message || "";
     const imagemUrl = body?.image?.imageUrl || body?.image?.imageMessage?.url || null;
     const imagemBase64Direto = body?.image?.imageMessage?.base64 || body?.image?.base64 || null;
@@ -183,25 +197,36 @@ if (messageId) {
 
     console.log("TIPO:", tipo, "TEM URL:", !!imagemUrl, "TEM BASE64:", !!imagemBase64Direto);
 
+    // Saudação simples — não usa histórico
+    const txt = textoRecebido.toLowerCase().trim();
+    const ehSaudacao = (txt === "oi" || txt === "olá" || txt === "ola" || txt === "hello" || txt === "hi" || txt.length <= 2) && !imagemUrl && !imagemBase64Direto;
+
+    if (ehSaudacao) {
+      await enviarMensagem(
+        telefone,
+        `Olá! 👋 Sou o *Doutorzinho*, seu assistente de saúde do SeuExamify!\n\nPosso te ajudar de duas formas:\n\n📸 *Envie uma foto* do seu exame e eu analiso na hora\n❓ *Digite sua dúvida* sobre algum valor específico\n\nComo posso te ajudar hoje? 😊`
+      );
+      return res.status(200).json({ ok: true });
+    }
+
+    let resposta = "";
+
     if (imagemUrl) {
       try {
+        await enviarMensagem(telefone, "⏳ Recebi seu exame! O Doutorzinho está analisando... aguarda uns 30 segundos 🩺");
         const { base64, mimetype } = await urlParaBase64(imagemUrl);
-        resposta = await analisarComImagem(base64, mimetype, telefone);
+        resposta = await responderComHistorico(telefone, textoRecebido || "Analise este exame médico.", { base64, mimetype });
       } catch (err) {
         console.error("Erro ao baixar imagem:", err);
         resposta = "😕 Tive um problema ao acessar sua imagem. Tenta mandar a foto novamente!";
       }
     } else if (imagemBase64Direto) {
-      resposta = await analisarComImagem(imagemBase64Direto, imagemMimeDireto, telefone);
+      await enviarMensagem(telefone, "⏳ Recebi seu exame! O Doutorzinho está analisando... aguarda uns 30 segundos 🩺");
+      resposta = await responderComHistorico(telefone, textoRecebido || "Analise este exame médico.", { base64: imagemBase64Direto, mimetype: imagemMimeDireto });
     } else if (isDocumento) {
       resposta = `📄 Recebi seu PDF!\n\nPor enquanto analiso melhor por *foto do exame*. Tira uma foto nítida do resultado e manda aqui que eu analiso na hora! 📸`;
     } else if (textoRecebido) {
-      const txt = textoRecebido.toLowerCase();
-      if (txt.includes("oi") || txt.includes("olá") || txt.includes("ola") || txt.includes("hello") || txt.length <= 3) {
-        resposta = `Olá! 👋 Sou o *Doutorzinho*, seu assistente de saúde do SeuExamify!\n\nPosso te ajudar de duas formas:\n\n📸 *Envie uma foto* do seu exame e eu analiso na hora\n❓ *Digite sua dúvida* sobre algum valor específico\n\nComo posso te ajudar hoje? 😊`;
-      } else {
-        resposta = await analisarComTexto(textoRecebido);
-      }
+      resposta = await responderComHistorico(telefone, textoRecebido);
     }
 
     if (resposta) {
