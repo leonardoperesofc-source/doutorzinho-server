@@ -1,17 +1,57 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Redis } from "@upstash/redis";
+import { createClient } from "@supabase/supabase-js";
 
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 const redis = Redis.fromEnv();
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
 const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE_ID;
 const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_SECURITY = process.env.ZAPI_SECURITY_TOKEN;
 
-// Máximo de mensagens no histórico por usuário
 const MAX_HISTORICO = 10;
-// Tempo de expiração do histórico: 2 horas de inatividade
 const HISTORICO_TTL = 60 * 60 * 2;
+
+const NORMALIZACAO_METRICAS = {
+  "colesterol total": "colesterol_total",
+  "colesterol ldl": "colesterol_ldl",
+  "ldl": "colesterol_ldl",
+  "colesterol hdl": "colesterol_hdl",
+  "hdl": "colesterol_hdl",
+  "triglicerídeos": "triglicerideos",
+  "triglicerideos": "triglicerideos",
+  "glicemia": "glicemia",
+  "glicose": "glicemia",
+  "glicemia em jejum": "glicemia",
+  "hemoglobina glicada": "hemoglobina_glicada",
+  "hba1c": "hemoglobina_glicada",
+  "vitamina d": "vitamina_d",
+  "vitamina b12": "vitamina_b12",
+  "hemoglobina": "hemoglobina",
+  "leucócitos": "leucocitos",
+  "plaquetas": "plaquetas",
+  "ferritina": "ferritina",
+  "ferro": "ferro",
+  "tsh": "tsh",
+  "t4 livre": "t4_livre",
+  "creatinina": "creatinina",
+  "ureia": "ureia",
+  "psa": "psa",
+  "pcr": "proteina_c_reativa",
+};
+
+function normalizarNome(nome) {
+  const lower = nome.toLowerCase().trim();
+  for (const [key, value] of Object.entries(NORMALIZACAO_METRICAS)) {
+    if (lower.includes(key)) return value;
+  }
+  return lower.replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+}
 
 const PROMPT_DOUTORZINHO = `Você é o Doutorzinho, um assistente simpático, acolhedor e inteligente que explica resultados de exames médicos e tira dúvidas gerais SOMENTE sobre saúde para brasileiros comuns.
 
@@ -21,53 +61,51 @@ Seu estilo:
 - Sempre contextualiza: "isso é comum", "não é urgência", "vale checar com seu médico"
 - Usa emojis com moderação para deixar o tom mais leve
 - Máximo 5 parágrafos curtos — vai direto ao ponto
-- Seja relacional e continue a conversa naturalmente — lembre do que o usuário disse antes
-- Faça perguntas de acompanhamento quando fizer sentido
-- Se o usuário responder algo sobre sua análise anterior, continue de onde parou
+- Seja relacional e continue a conversa naturalmente
+- Se perceber melhora em relação ao histórico, CELEBRE! "Seu colesterol caiu 20 pontos — isso é incrível! 🎉"
+- Ao final, sempre dê 1-2 recomendações práticas de estilo de vida
 
 Estrutura da sua resposta quando analisar exame:
-1. Resumo rápido do que encontrou (1-2 linhas)
-2. O que está normal ✅
-3. O que merece atenção ⚠️ (se houver)
-4. O que fazer agora (próximos passos práticos)
-5. 2-3 perguntas para levar ao médico
+1. Resumo rápido do que encontrou
+2. O que está normal ✅ e o que merece atenção ⚠️
+3. Comparação com histórico SE houver — celebre melhoras!
+4. 1-2 recomendações práticas de estilo de vida
+5. 1-2 perguntas para levar ao médico
 
 Regras absolutas:
 - NUNCA faça diagnóstico
-- NUNCA diga que algo é certamente uma doença
 - SEMPRE sugira consultar o médico para confirmação
-- Se a imagem não for um exame médico, diga gentilmente que só analisa exames
 - Termine sempre com: "Lembre-se: não esqueça de consultar seu médico. 🩺"
-- NUNCA peça para o usuário enviar o exame novamente se ele já enviou antes nessa conversa
-- Se o usuário fizer perguntas de acompanhamento, responda naturalmente sem reiniciar a conversa`;
+- NUNCA peça para o usuário enviar o exame novamente se já enviou antes`;
+
+const PROMPT_EXTRACAO = `Você é um extrator de dados médicos. Analise a mensagem e extraia TODOS os valores de exames mencionados.
+
+Retorne APENAS um JSON válido neste formato:
+{
+  "metricas": [
+    {
+      "nome": "Nome do exame como mencionado",
+      "valor": 123.4,
+      "unidade": "mg/dL",
+      "referencia": "< 200",
+      "status": "normal"
+    }
+  ],
+  "data_exame": "YYYY-MM-DD ou null",
+  "tem_metricas": true
+}
+
+Status deve ser: "normal", "alerta" ou "perigo"
+Se não houver nenhum valor de exame na mensagem, retorne: {"metricas": [], "tem_metricas": false}
+Não inclua texto fora do JSON.`;
 
 async function enviarMensagem(telefone, mensagem) {
   const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-text`;
   await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Client-Token": ZAPI_SECURITY,
-    },
+    headers: { "Content-Type": "application/json", "Client-Token": ZAPI_SECURITY },
     body: JSON.stringify({ phone: telefone, message: mensagem, delayMessage: 3 }),
   });
-}
-
-async function simularDigitando(telefone) {
-  try {
-    const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-chat-state`;
-    await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Client-Token": ZAPI_SECURITY,
-      },
-      body: JSON.stringify({ phone: telefone, chatState: "COMPOSING" }),
-    });
-    await new Promise(resolve => setTimeout(resolve, 3000));
-  } catch (err) {
-    console.log("Erro no simularDigitando:", err);
-  }
 }
 
 async function urlParaBase64(imageUrl) {
@@ -81,69 +119,125 @@ async function urlParaBase64(imageUrl) {
   return { base64, mimetype };
 }
 
-// Carrega histórico do Redis
+async function garantirUsuario(telefone) {
+  await supabase
+    .from("usuarios")
+    .upsert({ telefone }, { onConflict: "telefone", ignoreDuplicates: true });
+}
+
+async function buscarHistoricoSaude(telefone) {
+  const { data } = await supabase
+    .from("metricas_saude")
+    .select("nome, nome_normalizado, valor, unidade, status, data_exame")
+    .eq("usuario_telefone", telefone)
+    .order("data_exame", { ascending: false })
+    .limit(30);
+  return data || [];
+}
+
+function gerarContextoHistorico(historico) {
+  if (!historico || historico.length === 0) return "";
+  const grupos = {};
+  for (const m of historico) {
+    if (!grupos[m.nome_normalizado]) grupos[m.nome_normalizado] = [];
+    if (grupos[m.nome_normalizado].length < 2) grupos[m.nome_normalizado].push(m);
+  }
+  const linhas = Object.entries(grupos).map(([_, valores]) => {
+    const atual = valores[0];
+    const anterior = valores[1];
+    let linha = `- ${atual.nome}: ${atual.valor} ${atual.unidade || ""} (${atual.status})`;
+    if (anterior) {
+      const diff = atual.valor - anterior.valor;
+      linha += ` | Anterior: ${anterior.valor} (${diff > 0 ? "+" : ""}${diff.toFixed(1)})`;
+    }
+    return linha;
+  });
+  return `\n\n[HISTÓRICO DO PACIENTE — use para comparações e celebrar melhorias]:\n${linhas.join("\n")}`;
+}
+
+async function extrairMetricasDeTexto(texto) {
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      system: PROMPT_EXTRACAO,
+      messages: [{ role: "user", content: texto }],
+    });
+    const raw = response.content[0].text;
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { metricas: [], tem_metricas: false };
+    return JSON.parse(jsonMatch[0]);
+  } catch {
+    return { metricas: [], tem_metricas: false };
+  }
+}
+
+async function salvarMetricas(telefone, metricas, fonte, mensagemOriginal, dataExame) {
+  if (!metricas || metricas.length === 0) return;
+  await garantirUsuario(telefone);
+  const registros = metricas.map(m => ({
+    usuario_telefone: telefone,
+    nome: m.nome,
+    nome_normalizado: normalizarNome(m.nome),
+    valor: parseFloat(m.valor),
+    unidade: m.unidade || null,
+    referencia: m.referencia || null,
+    status: m.status || "normal",
+    fonte,
+    mensagem_original: mensagemOriginal?.substring(0, 500) || null,
+    data_exame: dataExame || new Date().toISOString().split("T")[0],
+  }));
+  const { error } = await supabase.from("metricas_saude").insert(registros);
+  if (error) console.error("Erro ao salvar métricas:", error);
+  else console.log(`Métricas salvas: ${registros.map(r => r.nome).join(", ")}`);
+}
+
 async function carregarHistorico(telefone) {
   try {
     const raw = await redis.get(`historico:${telefone}`);
     if (!raw) return [];
     return typeof raw === "string" ? JSON.parse(raw) : raw;
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
-// Salva histórico no Redis com TTL
 async function salvarHistorico(telefone, historico) {
   try {
-    // Mantém só as últimas MAX_HISTORICO mensagens
-    const recente = historico.slice(-MAX_HISTORICO);
-    await redis.set(`historico:${telefone}`, JSON.stringify(recente), { ex: HISTORICO_TTL });
-  } catch (err) {
-    console.log("Erro ao salvar histórico:", err);
-  }
+    await redis.set(`historico:${telefone}`, JSON.stringify(historico.slice(-MAX_HISTORICO)), { ex: HISTORICO_TTL });
+  } catch (err) { console.log("Erro ao salvar histórico:", err); }
 }
 
-// Resposta com histórico completo
 async function responderComHistorico(telefone, novaMensagem, imagemData = null) {
-  const historico = await carregarHistorico(telefone);
+  const [historico, historicoSaude] = await Promise.all([
+    carregarHistorico(telefone),
+    buscarHistoricoSaude(telefone),
+  ]);
 
-  // Monta a nova mensagem do usuário
+  const systemCompleto = PROMPT_DOUTORZINHO + gerarContextoHistorico(historicoSaude);
+
   let novoConteudo;
   if (imagemData) {
     const mimetypeValido = ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(imagemData.mimetype)
-      ? imagemData.mimetype
-      : "image/jpeg";
+      ? imagemData.mimetype : "image/jpeg";
     novoConteudo = [
-      {
-        type: "image",
-        source: { type: "base64", media_type: mimetypeValido, data: imagemData.base64 },
-      },
-      {
-        type: "text",
-        text: novaMensagem || "Analise este exame.",
-      },
+      { type: "image", source: { type: "base64", media_type: mimetypeValido, data: imagemData.base64 } },
+      { type: "text", text: novaMensagem || "Analise este exame médico." },
     ];
   } else {
     novoConteudo = novaMensagem;
   }
 
-  // Adiciona ao histórico
   historico.push({ role: "user", content: novoConteudo });
 
-  // Chama o Claude com todo o histórico
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,
-    system: PROMPT_DOUTORZINHO,
+    system: systemCompleto,
     messages: historico,
   });
 
   const respostaTexto = response.content[0].text;
-
-  // Salva resposta do assistente no histórico
   historico.push({ role: "assistant", content: respostaTexto });
   await salvarHistorico(telefone, historico);
-
   return respostaTexto;
 }
 
@@ -153,33 +247,22 @@ export default async function handler(req, res) {
   try {
     const body = req.body;
 
-    // Formata telefone e corrige 9º dígito se necessário
     let telefone = body?.phone?.replace(/\D/g, "");
     if (telefone && telefone.startsWith("55") && telefone.length === 12) {
       telefone = telefone.slice(0, 4) + "9" + telefone.slice(4);
     }
 
-    const tipo = body?.type;
-
     console.log("Telefone formatado:", telefone);
-    console.log("Chave Redis buscada:", `assinante:${telefone}`);
 
     if (!telefone) return res.status(200).json({ ok: true });
-
-    // Ignora mensagens enviadas pelo próprio bot
     if (body?.fromMe) return res.status(200).json({ ok: true });
 
-    // Anti-duplicata via Redis
     const messageId = body?.messageId || body?.id || null;
     if (messageId) {
       const salvou = await redis.set(`msg:${messageId}`, "1", { nx: true, ex: 300 });
-      if (!salvou) {
-        console.log("Mensagem duplicada ignorada:", messageId);
-        return res.status(200).json({ ok: true });
-      }
+      if (!salvou) return res.status(200).json({ ok: true });
     }
 
-    // Verifica se é assinante
     const isAssinante = await redis.get(`assinante:${telefone}`);
     if (!isAssinante) {
       await enviarMensagem(
@@ -193,11 +276,8 @@ export default async function handler(req, res) {
     const imagemUrl = body?.image?.imageUrl || body?.image?.imageMessage?.url || null;
     const imagemBase64Direto = body?.image?.imageMessage?.base64 || body?.image?.base64 || null;
     const imagemMimeDireto = body?.image?.imageMessage?.mimetype || body?.image?.mimetype || "image/jpeg";
-    const isDocumento = tipo === "document" || body?.document;
+    const isDocumento = body?.type === "document" || body?.document;
 
-    console.log("TIPO:", tipo, "TEM URL:", !!imagemUrl, "TEM BASE64:", !!imagemBase64Direto);
-
-    // Saudação simples — não usa histórico
     const txt = textoRecebido.toLowerCase().trim();
     const ehSaudacao = (txt === "oi" || txt === "olá" || txt === "ola" || txt === "hello" || txt === "hi" || txt.length <= 2) && !imagemUrl && !imagemBase64Direto;
 
@@ -215,23 +295,40 @@ export default async function handler(req, res) {
       try {
         await enviarMensagem(telefone, "⏳ Recebi seu exame! O Doutorzinho está analisando... aguarda uns 30 segundos 🩺");
         const { base64, mimetype } = await urlParaBase64(imagemUrl);
-        resposta = await responderComHistorico(telefone, textoRecebido || "Analise este exame médico.", { base64, mimetype });
+        const [respostaTexto, metricasExtraidas] = await Promise.all([
+          responderComHistorico(telefone, textoRecebido || "Analise este exame médico.", { base64, mimetype }),
+          extrairMetricasDeTexto(textoRecebido || "Exame médico em imagem"),
+        ]);
+        resposta = respostaTexto;
+        if (metricasExtraidas.tem_metricas) {
+          await salvarMetricas(telefone, metricasExtraidas.metricas, "whatsapp_foto", textoRecebido, metricasExtraidas.data_exame);
+        }
       } catch (err) {
-        console.error("Erro ao baixar imagem:", err);
+        console.error("Erro ao processar imagem:", err);
         resposta = "😕 Tive um problema ao acessar sua imagem. Tenta mandar a foto novamente!";
       }
     } else if (imagemBase64Direto) {
       await enviarMensagem(telefone, "⏳ Recebi seu exame! O Doutorzinho está analisando... aguarda uns 30 segundos 🩺");
-      resposta = await responderComHistorico(telefone, textoRecebido || "Analise este exame médico.", { base64: imagemBase64Direto, mimetype: imagemMimeDireto });
+      const [respostaTexto, metricasExtraidas] = await Promise.all([
+        responderComHistorico(telefone, textoRecebido || "Analise este exame médico.", { base64: imagemBase64Direto, mimetype: imagemMimeDireto }),
+        extrairMetricasDeTexto(textoRecebido || ""),
+      ]);
+      resposta = respostaTexto;
+      if (metricasExtraidas.tem_metricas) {
+        await salvarMetricas(telefone, metricasExtraidas.metricas, "whatsapp_foto", textoRecebido, metricasExtraidas.data_exame);
+      }
     } else if (isDocumento) {
       resposta = `📄 Recebi seu PDF!\n\nPor enquanto analiso melhor por *foto do exame*. Tira uma foto nítida do resultado e manda aqui que eu analiso na hora! 📸`;
     } else if (textoRecebido) {
+      const metricasExtraidas = await extrairMetricasDeTexto(textoRecebido);
+      if (metricasExtraidas.tem_metricas) {
+        await salvarMetricas(telefone, metricasExtraidas.metricas, "whatsapp_texto", textoRecebido, metricasExtraidas.data_exame);
+        console.log(`Métricas extraídas do texto: ${metricasExtraidas.metricas.map(m => m.nome).join(", ")}`);
+      }
       resposta = await responderComHistorico(telefone, textoRecebido);
     }
 
-    if (resposta) {
-      await enviarMensagem(telefone, resposta);
-    }
+    if (resposta) await enviarMensagem(telefone, resposta);
 
     return res.status(200).json({ ok: true });
   } catch (error) {
