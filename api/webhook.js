@@ -57,26 +57,95 @@ const PROMPT_DOUTORZINHO = `Voce e o Doutorzinho, um assistente de saude simpati
 
 Formatacao das respostas:
 - Escreva em texto corrido, como uma conversa de WhatsApp
-- Use *negrito* apenas para destacar valores alterados e nomes de exames importantes
+- Use *negrito* apenas para destacar valores numericos alterados e nomes dos exames mais importantes
 - Nao use hashtags, tracos no inicio de linha, listas numeradas ou outros sinais de formatacao
-- Paragrafos curtos, separados por linha em branco
+- Paragrafos curtos separados por linha em branco
 - Maximo 4 paragrafos
 - Tom acolhedor, nunca alarmista
 
 Estrutura da resposta quando analisar exame:
 1. Uma frase resumindo o quadro geral
-2. O que esta normal e o que merece atencao, destacando em negrito os valores e nomes de exames importantes
-3. Se houver algo alterado, contextualize com calma e sem assustar
+2. O que esta normal e o que merece atencao, destacando em *negrito* os valores e nomes de exames importantes
+3. Se houver algo alterado, contextualize com calma sem assustar
 4. Sempre finalize com 2 perguntas objetivas para o usuario levar ao medico na proxima consulta
 5. Frase final acolhedora lembrando de consultar o medico
 
 Regras absolutas:
 - NUNCA faca diagnostico
-- SEMPRE inclua 2 perguntas para o medico ao final da analise
-- SEMPRE use negrito nos valores alterados e nomes dos exames mais importantes
+- SEMPRE inclua 2 perguntas para o medico ao final da analise de exame
+- SEMPRE use *negrito* nos valores alterados e nomes dos exames importantes
 - NUNCA use tracos, numeros ou sinais como inicio de lista
 - Continue a conversa naturalmente lembrando do que o usuario disse antes
 - Quando perceber melhora no historico, comemore de forma genuina`
+
+const PROMPT_EXTRACAO = `Voce e um extrator de dados medicos. Analise a mensagem e extraia TODOS os valores de exames mencionados.
+
+Retorne APENAS um JSON valido neste formato:
+{
+  "metricas": [
+    {
+      "nome": "Nome do exame como mencionado",
+      "valor": 123.4,
+      "unidade": "mg/dL",
+      "referencia": "< 200",
+      "status": "normal"
+    }
+  ],
+  "data_exame": "YYYY-MM-DD ou null",
+  "tem_metricas": true
+}
+
+Status deve ser: "normal", "alerta" ou "perigo"
+Se nao houver nenhum valor de exame na mensagem, retorne: {"metricas": [], "tem_metricas": false}
+Nao inclua texto fora do JSON.`
+
+async function enviarMensagem(telefone, mensagem) {
+  const url = `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-text`;
+  await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Client-Token": ZAPI_SECURITY },
+    body: JSON.stringify({ phone: telefone, message: mensagem, delayMessage: 3 }),
+  });
+}
+
+async function urlParaBase64(imageUrl) {
+  const response = await fetch(imageUrl);
+  if (!response.ok) throw new Error(`Falha ao baixar imagem: ${response.status}`);
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const base64 = buffer.toString("base64");
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  const mimetype = contentType.split(";")[0].trim();
+  return { base64, mimetype };
+}
+
+async function garantirUsuario(telefone) {
+  await supabase
+    .from("usuarios")
+    .upsert({ telefone }, { onConflict: "telefone", ignoreDuplicates: true });
+}
+
+async function buscarHistoricoSaude(telefone) {
+  const { data } = await supabase
+    .from("metricas_saude")
+    .select("nome, nome_normalizado, valor, unidade, status, data_exame")
+    .eq("usuario_telefone", telefone)
+    .order("data_exame", { ascending: false })
+    .limit(30);
+  return data || [];
+}
+
+function gerarContextoHistorico(historico) {
+  if (!historico || historico.length === 0) return "";
+  const grupos = {};
+  for (const m of historico) {
+    if (!grupos[m.nome_normalizado]) grupos[m.nome_normalizado] = [];
+    if (grupos[m.nome_normalizado].length < 2) grupos[m.nome_normalizado].push(m);
+  }
+  const linhas = Object.entries(grupos).map(([_, valores]) => {
+    const atual = valores[0];
+    const anterior = valores[1];
+    let linha = `- ${atual.nome}: ${atual.valor} ${atual.unidade || ""} (${atual.status})`;
     if (anterior) {
       const diff = atual.valor - anterior.valor;
       linha += ` | Anterior: ${anterior.valor} (${diff > 0 ? "+" : ""}${diff.toFixed(1)})`;
