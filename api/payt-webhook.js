@@ -75,7 +75,19 @@ export default async function handler(req, res) {
     // Manda mensagem de boas-vindas no WhatsApp
     await enviarMensagem(
       telefone,
-      `🎉 *Bem-vindo ao SeuExamify!*\n\nSeu acesso ao *Doutorzinho* está ativo agora mesmo!\n\n📸 *Como usar:*\nÉ simples — manda a foto do seu exame aqui nessa conversa e eu analiso tudo em 30 segundos.\n\nVocê também pode me fazer perguntas sobre valores específicos, como:\n_"Meu colesterol LDL está em 160, é perigoso?"_\n\nEstou aqui 24h por dia, 7 dias por semana. 😊\n\n_Lembre-se: sou uma IA educacional e não substituo seu médico 🩺_`
+      `Ola! Seu acesso ao Doutorzinho esta ativo agora mesmo! 🎉
+
+Pode mandar a foto ou PDF do seu exame aqui nessa conversa que eu analiso em 30 segundos — sem jargao, sem susto.
+
+Voce tambem pode me contar um valor especifico, tipo: "meu colesterol esta em 180" — e eu explico o que isso significa.
+
+Ah, e criei seu Passaporte de Saude — um painel onde voce acompanha a evolucao de todos os seus exames ao longo do tempo. Para acessar:
+
+👉 app.seuexamify.com.br
+
+Crie sua conta com o mesmo e-mail que usou na compra e cadastre seu numero do WhatsApp no perfil para tudo ficar vinculado.
+
+Estou aqui sempre que precisar!`
     );
 
     return res.status(200).json({ ok: true });
